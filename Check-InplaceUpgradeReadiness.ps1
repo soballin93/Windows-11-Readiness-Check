@@ -139,6 +139,7 @@ function Get-SystemDisk {
       $script:SystemDiskResolutionTrace = $trace -join '; '
       return $fallbackDisk
     }
+    
   } catch {
     $trace += "CIM fallback failed: $($_.Exception.Message)"
   }
