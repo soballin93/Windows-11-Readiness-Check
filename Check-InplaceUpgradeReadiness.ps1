@@ -139,6 +139,7 @@ function Get-SystemDisk {
       $script:SystemDiskResolutionTrace = $trace -join '; '
       return $fallbackDisk
     }
+
   } catch {
     $trace += "CIM fallback failed: $($_.Exception.Message)"
   }
@@ -673,6 +674,7 @@ function Write-Report {
   } else {
     $overall = "FAIL"
   }
+
   if (-not $allPass -and $cpuUnknown -and ($Results | Where-Object { $_.Check -ne 'CPU Supported (heuristic)' -and -not $_.Pass }).Count -eq 0) {
     # Only CPU is unknown but others passed
     $overall = "WARN (CPU unknown)"
