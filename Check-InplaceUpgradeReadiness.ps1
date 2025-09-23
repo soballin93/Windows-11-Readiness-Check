@@ -53,7 +53,6 @@ function Format-State {
   return 'Unknown'
 }
 
-
 function Test-Ram {
   $mem = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
   $minBytes = 7GB
@@ -433,10 +432,10 @@ function Resolve-TpmStatus {
     if ($tpm) {
       $signals += "Get-Tpm => Present=$($tpm.TpmPresent); Enabled=$($tpm.TpmEnabled); Activated=$($tpm.TpmActivated); Ready=$($tpm.TpmReady); SpecVersion='$($tpm.SpecVersion)'; ManagedAuthLevel='$($tpm.ManagedAuthLevel)'"
 
-      if ($tpm.PSObject.Properties['TpmPresent']) { & $addSignal -Property 'Present' -Source 'Get-Tpm.TpmPresent' -Value ([bool]$tpm.TpmPresent) }
-      if ($tpm.PSObject.Properties['TpmEnabled']) { & $addSignal -Property 'Enabled' -Source 'Get-Tpm.TpmEnabled' -Value ([bool]$tpm.TpmEnabled) }
-      if ($tpm.PSObject.Properties['TpmActivated']) { & $addSignal -Property 'Activated' -Source 'Get-Tpm.TpmActivated' -Value ([bool]$tpm.TpmActivated) }
-      if ($tpm.PSObject.Properties['TpmReady']) { & $addSignal -Property 'Ready' -Source 'Get-Tpm.TpmReady' -Value ([bool]$tpm.TpmReady) }
+      if ($tpm.PSObject.Properties['TpmPresent']) { . $addSignal -Property 'Present' -Source 'Get-Tpm.TpmPresent' -Value ([bool]$tpm.TpmPresent) }
+      if ($tpm.PSObject.Properties['TpmEnabled']) { . $addSignal -Property 'Enabled' -Source 'Get-Tpm.TpmEnabled' -Value ([bool]$tpm.TpmEnabled) }
+      if ($tpm.PSObject.Properties['TpmActivated']) { . $addSignal -Property 'Activated' -Source 'Get-Tpm.TpmActivated' -Value ([bool]$tpm.TpmActivated) }
+      if ($tpm.PSObject.Properties['TpmReady']) { . $addSignal -Property 'Ready' -Source 'Get-Tpm.TpmReady' -Value ([bool]$tpm.TpmReady) }
       if ($tpm.SpecVersion) { $specCandidates += [string]$tpm.SpecVersion }
     } else {
       $notes += 'Get-Tpm returned no data'
@@ -451,42 +450,42 @@ function Resolve-TpmStatus {
       $enabledSignal = $null
       if ($cimTpm.PSObject.Properties['IsEnabled'] -and $null -ne $cimTpm.IsEnabled) {
         $enabledSignal = [bool]$cimTpm.IsEnabled
-        & $addSignal -Property 'Enabled' -Source 'Win32_Tpm.IsEnabled' -Value $enabledSignal
+        . $addSignal -Property 'Enabled' -Source 'Win32_Tpm.IsEnabled' -Value $enabledSignal
       }
       if ($cimTpm.PSObject.Properties['IsEnabled_InitialValue'] -and $null -ne $cimTpm.IsEnabled_InitialValue) {
         $initialEnabled = [bool]$cimTpm.IsEnabled_InitialValue
-        & $addSignal -Property 'Enabled' -Source 'Win32_Tpm.IsEnabled_InitialValue' -Value $initialEnabled
+        . $addSignal -Property 'Enabled' -Source 'Win32_Tpm.IsEnabled_InitialValue' -Value $initialEnabled
         if ($null -eq $enabledSignal) { $enabledSignal = $initialEnabled }
       }
 
       $activatedSignal = $null
       if ($cimTpm.PSObject.Properties['IsActivated'] -and $null -ne $cimTpm.IsActivated) {
         $activatedSignal = [bool]$cimTpm.IsActivated
-        & $addSignal -Property 'Activated' -Source 'Win32_Tpm.IsActivated' -Value $activatedSignal
+        . $addSignal -Property 'Activated' -Source 'Win32_Tpm.IsActivated' -Value $activatedSignal
       }
       if ($cimTpm.PSObject.Properties['IsActivated_InitialValue'] -and $null -ne $cimTpm.IsActivated_InitialValue) {
         $initialActivated = [bool]$cimTpm.IsActivated_InitialValue
-        & $addSignal -Property 'Activated' -Source 'Win32_Tpm.IsActivated_InitialValue' -Value $initialActivated
+        . $addSignal -Property 'Activated' -Source 'Win32_Tpm.IsActivated_InitialValue' -Value $initialActivated
         if ($null -eq $activatedSignal) { $activatedSignal = $initialActivated }
       }
 
       $readySignal = $null
       if ($cimTpm.PSObject.Properties['IsReady'] -and $null -ne $cimTpm.IsReady) {
         $readySignal = [bool]$cimTpm.IsReady
-        & $addSignal -Property 'Ready' -Source 'Win32_Tpm.IsReady' -Value $readySignal
+        . $addSignal -Property 'Ready' -Source 'Win32_Tpm.IsReady' -Value $readySignal
       }
       if ($cimTpm.PSObject.Properties['IsReady_InitialValue'] -and $null -ne $cimTpm.IsReady_InitialValue) {
         $initialReady = [bool]$cimTpm.IsReady_InitialValue
-        & $addSignal -Property 'Ready' -Source 'Win32_Tpm.IsReady_InitialValue' -Value $initialReady
+        . $addSignal -Property 'Ready' -Source 'Win32_Tpm.IsReady_InitialValue' -Value $initialReady
         if ($null -eq $readySignal) { $readySignal = $initialReady }
       }
 
       if ($cimTpm.PSObject.Properties['IsOwned'] -and $null -ne $cimTpm.IsOwned) {
         $owned = [bool]$cimTpm.IsOwned
-        & $addSignal -Property 'Ready' -Source 'Win32_Tpm.IsOwned' -Value $owned
+        . $addSignal -Property 'Ready' -Source 'Win32_Tpm.IsOwned' -Value $owned
       }
 
-      & $addSignal -Property 'Present' -Source 'Win32_Tpm.Exists' -Value $true
+      . $addSignal -Property 'Present' -Source 'Win32_Tpm.Exists' -Value $true
 
       $signals += "Win32_Tpm => Present=True; Enabled=$(Format-State $enabledSignal); Activated=$(Format-State $activatedSignal); Ready=$(Format-State $readySignal); Owned=$(Format-State ($cimTpm.IsOwned)); SpecVersion='$($cimTpm.SpecVersion)'"
 
@@ -503,7 +502,7 @@ function Resolve-TpmStatus {
     $reg = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\TrustedPlatformModule' -ErrorAction Stop
     if ($reg -and $reg.PSObject.Properties['TpmSupport']) {
       $signals += "Registry TrustedPlatformModule => TpmSupport=$($reg.TpmSupport)"
-      if ($reg.TpmSupport -ne $null) { & $addSignal -Property 'Present' -Source 'Registry.TpmSupport' -Value ($reg.TpmSupport -ne 0) }
+      if ($reg.TpmSupport -ne $null) { . $addSignal -Property 'Present' -Source 'Registry.TpmSupport' -Value ($reg.TpmSupport -ne 0) }
     }
     if ($reg -and $reg.PSObject.Properties['SpecVersion'] -and $reg.SpecVersion) {
       $specValue = $reg.SpecVersion
@@ -679,7 +678,6 @@ function Parse-IntelGen {
       return [int]$digits.Substring(0,1)    # 8500 -> 8th gen, 9700 -> 9th gen
     }
 
-
     if ($digits.Length -eq 3) {
       return [int]$digits.Substring(0,1)
     }
@@ -759,6 +757,7 @@ function Test-CPU {
     $status = $true
   }
 
+
   $result = New-Result -Name "CPU Supported (heuristic)" -Pass:$status -Detail:$detail
   # Attach a hint about unknown classification
   $result | Add-Member -NotePropertyName Unknown -NotePropertyValue:$unknown
@@ -778,7 +777,6 @@ function Write-Report {
     }
   }
 
-
   if ($allPass) {
     $overall = "PASS"
   } else {
@@ -793,9 +791,7 @@ function Write-Report {
   $hostName = $env:COMPUTERNAME
   $os = (Get-CimInstance Win32_OperatingSystem)
   $sys = (Get-CimInstance Win32_ComputerSystem)
-
   $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1)
-
   $summary = [pscustomobject]@{
     ComputerName = $hostName
     OS           = "$($os.Caption) $($os.Version) ($($os.OSArchitecture))"
@@ -806,6 +802,7 @@ function Write-Report {
     Overall      = $overall
     Timestamp    = (Get-Date).ToString('s')
   }
+
 
 
   # Human readable
