@@ -53,6 +53,7 @@ function Format-State {
   return 'Unknown'
 }
 
+
 function Test-Ram {
   $mem = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
   $minBytes = 7GB
@@ -139,6 +140,7 @@ function Get-SystemDisk {
       $script:SystemDiskResolutionTrace = $trace -join '; '
       return $fallbackDisk
     }
+
   } catch {
     $trace += "CIM fallback failed: $($_.Exception.Message)"
   }
@@ -677,6 +679,7 @@ function Parse-IntelGen {
       return [int]$digits.Substring(0,1)    # 8500 -> 8th gen, 9700 -> 9th gen
     }
 
+
     if ($digits.Length -eq 3) {
       return [int]$digits.Substring(0,1)
     }
@@ -775,11 +778,13 @@ function Write-Report {
     }
   }
 
+
   if ($allPass) {
     $overall = "PASS"
   } else {
     $overall = "FAIL"
   }
+
   if (-not $allPass -and $cpuUnknown -and ($Results | Where-Object { $_.Check -ne 'CPU Supported (heuristic)' -and -not $_.Pass }).Count -eq 0) {
     # Only CPU is unknown but others passed
     $overall = "WARN (CPU unknown)"
@@ -788,6 +793,7 @@ function Write-Report {
   $hostName = $env:COMPUTERNAME
   $os = (Get-CimInstance Win32_OperatingSystem)
   $sys = (Get-CimInstance Win32_ComputerSystem)
+
   $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1)
 
   $summary = [pscustomobject]@{
@@ -800,6 +806,7 @@ function Write-Report {
     Overall      = $overall
     Timestamp    = (Get-Date).ToString('s')
   }
+
 
   # Human readable
   Write-Host ""
