@@ -5,7 +5,7 @@
 .DESCRIPTION
   Checks:
     - CPU appears on a supported track (heuristic: Intel Core 8th gen+; AMD Ryzen 2000+; Intel Core Ultra; Snapdragon X; others = unknown)
-    - RAM >= 16 GB
+    - RAM >= 7 GB
     - System drive is SSD
     - Firmware boot mode is UEFI (not Legacy/CSM)
     - TPM present, enabled, ready; spec version includes 2.0
@@ -47,27 +47,94 @@ function New-Result {
 
 function Test-Ram {
   $mem = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
-  $minBytes = 16GB
+  $minBytes = 7GB
   $ok = ($mem -ge $minBytes)
-  $detail = "{0:N1} GB installed (min 16 GB)" -f ($mem/1GB)
-  return New-Result -Name "RAM >= 16 GB" -Pass:$ok -Detail:$detail
+  $detail = "{0:N1} GB installed (min 7 GB)" -f ($mem/1GB)
+  return New-Result -Name "RAM >= 7 GB" -Pass:$ok -Detail:$detail
 }
 
+$script:SystemDiskResolutionTrace = $null
+
 function Get-SystemDisk {
-  try {
-    $driveLetter = $env:SystemDrive.TrimEnd('\')[-1]
-    $part = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
-    $disk = Get-Disk -Number $part.DiskNumber -ErrorAction Stop
-    return $disk
-  } catch {
+  $trace = @()
+  $driveRoot = $env:SystemDrive
+
+  if (-not $driveRoot) {
+    $trace += "SystemDrive environment variable not set"
+    $script:SystemDiskResolutionTrace = $trace -join '; '
     return $null
   }
+
+  $driveNormalized = $driveRoot.TrimEnd('\')
+  if (-not $driveNormalized.EndsWith(':')) {
+    $driveNormalized += ':'
+  }
+
+  $driveLetter = $driveNormalized.TrimEnd(':')
+  if ([string]::IsNullOrWhiteSpace($driveLetter)) {
+    $trace += "Could not derive drive letter from '$driveRoot'"
+    $script:SystemDiskResolutionTrace = $trace -join '; '
+    return $null
+  }
+  $driveLetter = $driveLetter.Substring($driveLetter.Length - 1, 1).ToUpper()
+
+  try {
+    $part = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
+    $disk = Get-Disk -Number $part.DiskNumber -ErrorAction Stop
+    $trace += "Storage module resolved drive '$driveNormalized' to Disk #$($disk.Number)"
+    $script:SystemDiskResolutionTrace = $trace -join '; '
+    return $disk
+  } catch {
+    $trace += "Storage module lookup failed: $($_.Exception.Message)"
+  }
+
+  try {
+    $logical = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$driveNormalized'" -ErrorAction Stop
+    $partition = Get-CimAssociatedInstance -InputObject $logical -Association Win32_LogicalDiskToPartition -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $partition) {
+      throw "No associated partition found"
+    }
+
+    $diskDrive = Get-CimAssociatedInstance -InputObject $partition -Association Win32_DiskDriveToDiskPartition -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $diskDrive) {
+      throw "No associated disk drive found"
+    }
+
+    $diskNumber = [int]$diskDrive.Index
+    try {
+      $disk = Get-Disk -Number $diskNumber -ErrorAction Stop
+      $trace += "CIM fallback resolved drive '$driveNormalized' to Disk #$diskNumber"
+      $script:SystemDiskResolutionTrace = $trace -join '; '
+      return $disk
+    } catch {
+      $trace += "CIM fallback resolved disk #$diskNumber but Get-Disk failed: $($_.Exception.Message)"
+      $partitionStyle = if ($partition.Type -like 'GPT*') { 'GPT' } elseif ($partition.Type) { 'MBR/Unknown' } else { 'Unknown' }
+      $fallbackDisk = [pscustomobject]@{
+        Number         = $diskNumber
+        BusType        = if ($diskDrive.InterfaceType) { $diskDrive.InterfaceType } else { 'Unknown' }
+        PartitionStyle = $partitionStyle
+        Model          = $diskDrive.Model
+        Source         = 'CIM Fallback'
+      }
+      $script:SystemDiskResolutionTrace = $trace -join '; '
+      return $fallbackDisk
+    }
+  } catch {
+    $trace += "CIM fallback failed: $($_.Exception.Message)"
+  }
+
+  $script:SystemDiskResolutionTrace = $trace -join '; '
+  return $null
 }
 
 function Test-SSD {
   $disk = Get-SystemDisk
   if (-not $disk) {
-    return New-Result "System Drive is SSD" $false "Unable to resolve system disk."
+    $detail = "Unable to resolve system disk."
+    if ($script:SystemDiskResolutionTrace) {
+      $detail += " Attempts: $script:SystemDiskResolutionTrace"
+    }
+    return New-Result "System Drive is SSD" $false $detail
   }
 
   $isSSD = $false
@@ -100,7 +167,8 @@ function Test-SSD {
     }
   }
 
-  $detail = "Disk #$($disk.Number) | Bus: $($disk.BusType) | GPT: $($disk.PartitionStyle -eq 'GPT') | Evidence: " + ($evidence -join '; ')
+  $source = if ($disk.PSObject.Properties['Source']) { $disk.Source } else { 'Storage' }
+  $detail = "Disk #$($disk.Number) | Bus: $($disk.BusType) | GPT: $($disk.PartitionStyle -eq 'GPT') | Source: $source | Evidence: " + ($evidence -join '; ')
   return New-Result -Name "System Drive is SSD" -Pass:$isSSD -Detail:$detail
 }
 
@@ -147,11 +215,29 @@ function Test-TPM {
 
 function Parse-IntelGen {
   param([string]$cpuName)
-  # Match common formats: i5-8500, i7-1065G7, i9-12900K
+  # Match common formats: i5-8500, i7-1065G7, i5-1135G7, i9-12900K
   if ($cpuName -match 'Core\(TM\)\s+i\d{1,2}-([0-9]{4,5})') {
-    $num = [int]$Matches[1]
-    if ($num -ge 10000) { return [int]([string]$num).Substring(0,2) }  # 1065G7 -> 10th gen, 12900K -> 12th
-    else { return [int]([string]$num).Substring(0,1) + 0 }             # 8500 -> 8th gen
+    $digits = [string]$Matches[1]
+
+    if ($digits.Length -ge 5) {
+      # Five digits covers 10th gen desktop parts and newer (e.g. 10400, 12900)
+      return [int]$digits.Substring(0,2)
+    }
+
+    if ($digits.Length -eq 4) {
+      # Four digits are ambiguous: 8th/9th gen desktop parts use a single leading digit
+      # while 10th+ gen mobile parts start with "10", "11", etc. Distinguish by the
+      # leading characters.
+      if ($digits.StartsWith('1')) {
+        return [int]$digits.Substring(0,2)  # 1005G1 -> 10th gen, 1135G7 -> 11th gen
+      }
+
+      return [int]$digits.Substring(0,1)    # 8500 -> 8th gen, 9700 -> 9th gen
+    }
+
+    if ($digits.Length -eq 3) {
+      return [int]$digits.Substring(0,1)
+    }
   }
   return $null
 }
@@ -255,16 +341,16 @@ function Write-Report {
   $sys = (Get-CimInstance Win32_ComputerSystem)
   $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1)
 
-  $summary = [pscustomobject]@{
-    ComputerName = $hostName
-    OS           = "$($os.Caption) $($os.Version) ($([int]$os.OSArchitecture)-bit)"
-    Model        = $sys.Model
-    Manufacturer = $sys.Manufacturer
-    CPU          = $cpu.Name
-    Results      = $Results
-    Overall      = $overall
-    Timestamp    = (Get-Date).ToString('s')
-  }
+    $summary = [pscustomobject]@{
+      ComputerName = $hostName
+      OS           = "$($os.Caption) $($os.Version) ($($os.OSArchitecture))"
+      Model        = $sys.Model
+      Manufacturer = $sys.Manufacturer
+      CPU          = $cpu.Name
+      Results      = $Results
+      Overall      = $overall
+      Timestamp    = (Get-Date).ToString('s')
+    }
 
   # Human readable
   Write-Host ""
