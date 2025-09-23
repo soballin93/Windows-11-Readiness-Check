@@ -5,7 +5,7 @@
 .DESCRIPTION
   Checks:
     - CPU appears on a supported track (heuristic: Intel Core 8th gen+; AMD Ryzen 2000+; Intel Core Ultra; Snapdragon X; others = unknown)
-    - RAM >= 16 GB
+    - RAM >= 8 GB
     - System drive is SSD
     - Firmware boot mode is UEFI (not Legacy/CSM)
     - TPM present, enabled, ready; spec version includes 2.0
@@ -47,10 +47,10 @@ function New-Result {
 
 function Test-Ram {
   $mem = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
-  $minBytes = 16GB
+  $minBytes = 8GB
   $ok = ($mem -ge $minBytes)
-  $detail = "{0:N1} GB installed (min 16 GB)" -f ($mem/1GB)
-  return New-Result -Name "RAM >= 16 GB" -Pass:$ok -Detail:$detail
+  $detail = "{0:N1} GB installed (min 8 GB)" -f ($mem/1GB)
+  return New-Result -Name "RAM >= 8 GB" -Pass:$ok -Detail:$detail
 }
 
 function Get-SystemDisk {
