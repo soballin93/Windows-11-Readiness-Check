@@ -5,7 +5,7 @@
 .DESCRIPTION
   Checks:
     - CPU appears on a supported track (heuristic: Intel Core 8th gen+; AMD Ryzen 2000+; Intel Core Ultra; Snapdragon X; others = unknown)
-    - RAM >= 16 GB
+    - RAM >= 7 GB
     - System drive is SSD
     - Firmware boot mode is UEFI (not Legacy/CSM)
     - TPM present, enabled, ready; spec version includes 2.0
@@ -47,10 +47,10 @@ function New-Result {
 
 function Test-Ram {
   $mem = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
-  $minBytes = 16GB
+  $minBytes = 7GB
   $ok = ($mem -ge $minBytes)
-  $detail = "{0:N1} GB installed (min 16 GB)" -f ($mem/1GB)
-  return New-Result -Name "RAM >= 16 GB" -Pass:$ok -Detail:$detail
+  $detail = "{0:N1} GB installed (min 7 GB)" -f ($mem/1GB)
+  return New-Result -Name "RAM >= 7 GB" -Pass:$ok -Detail:$detail
 }
 
 function Get-SystemDisk {
@@ -147,11 +147,29 @@ function Test-TPM {
 
 function Parse-IntelGen {
   param([string]$cpuName)
-  # Match common formats: i5-8500, i7-1065G7, i9-12900K
+  # Match common formats: i5-8500, i7-1065G7, i5-1135G7, i9-12900K
   if ($cpuName -match 'Core\(TM\)\s+i\d{1,2}-([0-9]{4,5})') {
-    $num = [int]$Matches[1]
-    if ($num -ge 10000) { return [int]([string]$num).Substring(0,2) }  # 1065G7 -> 10th gen, 12900K -> 12th
-    else { return [int]([string]$num).Substring(0,1) + 0 }             # 8500 -> 8th gen
+    $digits = [string]$Matches[1]
+
+    if ($digits.Length -ge 5) {
+      # Five digits covers 10th gen desktop parts and newer (e.g. 10400, 12900)
+      return [int]$digits.Substring(0,2)
+    }
+
+    if ($digits.Length -eq 4) {
+      # Four digits are ambiguous: 8th/9th gen desktop parts use a single leading digit
+      # while 10th+ gen mobile parts start with "10", "11", etc. Distinguish by the
+      # leading characters.
+      if ($digits.StartsWith('1')) {
+        return [int]$digits.Substring(0,2)  # 1005G1 -> 10th gen, 1135G7 -> 11th gen
+      }
+
+      return [int]$digits.Substring(0,1)    # 8500 -> 8th gen, 9700 -> 9th gen
+    }
+
+    if ($digits.Length -eq 3) {
+      return [int]$digits.Substring(0,1)
+    }
   }
   return $null
 }
