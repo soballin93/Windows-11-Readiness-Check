@@ -221,32 +221,6 @@ function Resolve-FirmwareMode {
   }
 
   try {
-    $systeminfoLines = systeminfo.exe 2>&1
-    $biosModeValue = $null
-
-    foreach ($line in $systeminfoLines) {
-      if ($line -match '^\s*BIOS Mode\s*:\s*(.+)$') {
-        $biosModeValue = $Matches[1].Trim()
-        break
-      }
-    }
-
-    if ($biosModeValue) {
-      if ($biosModeValue -match 'UEFI') {
-        $signals += [pscustomobject]@{ Source = 'System Information'; Value = 'UEFI'; Text = "systeminfo BIOS Mode=$biosModeValue" }
-      } elseif ($biosModeValue -match 'Legacy|CSM|BIOS') {
-        $signals += [pscustomobject]@{ Source = 'System Information'; Value = 'Legacy'; Text = "systeminfo BIOS Mode=$biosModeValue" }
-      } else {
-        $signals += [pscustomobject]@{ Source = 'System Information'; Value = 'Unknown'; Text = "systeminfo BIOS Mode=$biosModeValue (unrecognized)" }
-      }
-    } else {
-      $notes += 'systeminfo output did not include a BIOS Mode entry'
-    }
-  } catch {
-    $notes += "systeminfo query failed: $($_.Exception.Message)"
-  }
-
-  try {
     $secureBootKey = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' -ErrorAction Stop
     $notes += "SecureBoot registry present (UEFI-capable platform). UEFISecureBootEnabled=$($secureBootKey.UEFISecureBootEnabled)"
     $signals += [pscustomobject]@{ Source = 'SecureBootRegistry'; Value = 'UEFI'; Text = 'SecureBoot state registry present (UEFI signal)' }
