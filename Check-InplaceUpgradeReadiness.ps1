@@ -139,7 +139,7 @@ function Get-SystemDisk {
       $script:SystemDiskResolutionTrace = $trace -join '; '
       return $fallbackDisk
     }
-    
+
   } catch {
     $trace += "CIM fallback failed: $($_.Exception.Message)"
   }
@@ -469,9 +469,28 @@ function Resolve-TpmStatus {
       }
     }
   }
-  $specTokens = $specTokens | Sort-Object -Unique
+  if ($specTokens) {
+    $specTokens = @($specTokens | Sort-Object -Unique)
+  } else {
+    $specTokens = @()
+  }
 
-  $spec20 = ($specTokens -contains '2.0')
+  $spec20 = $false
+  foreach ($token in $specTokens) {
+    if ($token -match '^v?2(\.0+)?$' -or $token -match '(^|[^0-9])2\.0($|[^0-9])') {
+      $spec20 = $true
+      break
+    }
+  }
+
+  if (-not $spec20 -and $specCandidates) {
+    foreach ($candidate in $specCandidates) {
+      if ([string]$candidate -match '(^|[^0-9])2\.0($|[^0-9])') {
+        $spec20 = $true
+        break
+      }
+    }
+  }
 
   return [pscustomobject]@{
     Present      = $present
@@ -494,9 +513,25 @@ function Test-TPM {
            $status.Ready -eq $true -and
            $status.Spec20)
 
+  $specList = @()
+  if ($status.SpecVersions) {
+    if ($status.SpecVersions -is [System.Collections.IEnumerable] -and -not ($status.SpecVersions -is [string])) {
+      foreach ($item in $status.SpecVersions) {
+        if ($item) { $specList += [string]$item }
+      }
+    } else {
+      $specList += [string]$status.SpecVersions
+    }
+  }
+
+  if ($specList) {
+    $specList = @($specList | Sort-Object -Unique)
+  } else {
+    $specList = @()
+  }
   $specVersions = 'Unknown'
-  if ($status.SpecVersions -and $status.SpecVersions.Count -gt 0) {
-    $specVersions = $status.SpecVersions -join ', '
+  if ($specList.Count -gt 0) {
+    $specVersions = $specList -join ', '
   }
 
   $detailParts = @(
@@ -639,6 +674,7 @@ function Write-Report {
   } else {
     $overall = "FAIL"
   }
+
   if (-not $allPass -and $cpuUnknown -and ($Results | Where-Object { $_.Check -ne 'CPU Supported (heuristic)' -and -not $_.Pass }).Count -eq 0) {
     # Only CPU is unknown but others passed
     $overall = "WARN (CPU unknown)"
