@@ -490,6 +490,7 @@ function Test-TPM {
   return New-Result -Name "TPM 2.0 Present/Enabled/Ready" -Pass:$pass -Detail:$detail
 }
 
+
 function Parse-IntelGen {
   param([string]$cpuName)
   # Match common formats: i5-8500, i7-1065G7, i5-1135G7, i9-12900K
