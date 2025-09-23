@@ -172,19 +172,150 @@ function Test-SSD {
   return New-Result -Name "System Drive is SSD" -Pass:$isSSD -Detail:$detail
 }
 
-function Test-UEFI {
-  # Check registry PEFirmwareType: 1=BIOS, 2=UEFI
+function Resolve-FirmwareMode {
+  $signals = @()
+  $notes = @()
+
   try {
     $val = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name 'PEFirmwareType' -ErrorAction Stop | Select-Object -ExpandProperty PEFirmwareType
-    $uefi = ($val -eq 2)
-    $disk = Get-SystemDisk
-    $gpt = $false
-    if ($disk) { $gpt = ($disk.PartitionStyle -eq 'GPT') }
-    $detail = "PEFirmwareType=$val (2=UEFI). System disk GPT=$gpt."
-    return New-Result -Name "UEFI Boot Mode (not Legacy/CSM)" -Pass:$uefi -Detail:$detail
+    if ($val -eq 2) {
+      $signals += [pscustomobject]@{ Source = 'PEFirmwareType'; Value = 'UEFI'; Text = "PEFirmwareType=2 (UEFI signal)" }
+    } elseif ($val -eq 1) {
+      $signals += [pscustomobject]@{ Source = 'PEFirmwareType'; Value = 'Legacy'; Text = "PEFirmwareType=1 (Legacy signal)" }
+    } else {
+      $signals += [pscustomobject]@{ Source = 'PEFirmwareType'; Value = 'Unknown'; Text = "PEFirmwareType=$val (unrecognized value)" }
+    }
   } catch {
-    return New-Result -Name "UEFI Boot Mode (not Legacy/CSM)" -Pass:$false -Detail:"Could not read PEFirmwareType: $($_.Exception.Message)"
+    $notes += "PEFirmwareType lookup failed: $($_.Exception.Message)"
   }
+
+  try {
+    $secureBoot = Confirm-SecureBootUEFI -ErrorAction Stop
+    $status = if ($secureBoot) { 'enabled' } else { 'disabled' }
+    $signals += [pscustomobject]@{ Source = 'Confirm-SecureBootUEFI'; Value = 'UEFI'; Text = "Confirm-SecureBootUEFI returned $secureBoot (Secure Boot $status)" }
+  } catch {
+    $msg = $_.Exception.Message
+    if ($msg -match 'not supported on this platform') {
+      $signals += [pscustomobject]@{ Source = 'Confirm-SecureBootUEFI'; Value = 'Legacy'; Text = "Confirm-SecureBootUEFI not supported (Legacy signal): $msg" }
+    } else {
+      $notes += "Confirm-SecureBootUEFI failed: $msg"
+    }
+  }
+
+  try {
+    $msInfo = Get-CimInstance -Namespace 'root\\wmi' -Class MS_SystemInformation -ErrorAction Stop
+    if ($msInfo.BIOSMode) {
+      $modeText = $msInfo.BIOSMode
+      if ($modeText -match 'UEFI') {
+        $signals += [pscustomobject]@{ Source = 'MS_SystemInformation'; Value = 'UEFI'; Text = "MS_SystemInformation.BIOSMode=$modeText" }
+      } elseif ($modeText -match 'Legacy|CSM|BIOS') {
+        $signals += [pscustomobject]@{ Source = 'MS_SystemInformation'; Value = 'Legacy'; Text = "MS_SystemInformation.BIOSMode=$modeText" }
+      } else {
+        $signals += [pscustomobject]@{ Source = 'MS_SystemInformation'; Value = 'Unknown'; Text = "MS_SystemInformation.BIOSMode=$modeText (unrecognized)" }
+      }
+    } else {
+      $notes += 'MS_SystemInformation.BIOSMode empty or null'
+    }
+  } catch {
+    $notes += "MS_SystemInformation lookup failed: $($_.Exception.Message)"
+  }
+
+  try {
+    $secureBootKey = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' -ErrorAction Stop
+    $notes += "SecureBoot registry present (UEFI-capable platform). UEFISecureBootEnabled=$($secureBootKey.UEFISecureBootEnabled)"
+    $signals += [pscustomobject]@{ Source = 'SecureBootRegistry'; Value = 'UEFI'; Text = 'SecureBoot state registry present (UEFI signal)' }
+  } catch {
+    $notes += "SecureBoot registry absent or inaccessible: $($_.Exception.Message)"
+  }
+
+  $uefiCount = ($signals | Where-Object { $_.Value -eq 'UEFI' }).Count
+  $legacyCount = ($signals | Where-Object { $_.Value -eq 'Legacy' }).Count
+  $hasConflict = ($uefiCount -gt 0 -and $legacyCount -gt 0)
+  $decided = $null
+
+  if ($hasConflict) {
+    $notes += 'Conflicting firmware signals detected'
+  } elseif ($uefiCount -gt 0 -and $legacyCount -eq 0) {
+    $decided = $true
+  } elseif ($legacyCount -gt 0 -and $uefiCount -eq 0) {
+    $decided = $false
+  }
+
+  return [pscustomobject]@{
+    IsUefi       = $decided
+    Signals      = $signals
+    Notes        = $notes
+    HasConflict  = $hasConflict
+  }
+}
+
+function Format-GptStatus {
+  param($Disk)
+
+  if (-not $Disk) {
+    return 'Unknown (system disk unresolved)'
+  }
+
+  if (-not $Disk.PSObject.Properties['PartitionStyle']) {
+    return 'Unknown (partition style unavailable)'
+  }
+
+  $style = $Disk.PartitionStyle
+  if ($style -is [string]) {
+    if ($style -eq 'GPT') { return 'True' }
+    elseif ($style -eq 'MBR') { return 'False (style: MBR)' }
+    elseif ($style -eq 'RAW') { return 'False (style: RAW)' }
+    elseif ($style -eq 'MBR/Unknown') { return 'False/Unknown (fallback reported)' }
+    else { return "Unknown (style: $style)" }
+  }
+
+  try {
+    if ($style -eq [Microsoft.Management.Infrastructure.CimFlags]::NullValue) { return 'Unknown (style null)' }
+  } catch {
+    # Ignore if enum type not available
+  }
+
+  try {
+    $styleString = [string]$style
+    if ($styleString) {
+      return "Unknown (style: $styleString)"
+    }
+  } catch {
+    # ignored
+  }
+
+  return 'Unknown'
+}
+
+function Test-UEFI {
+  $mode = Resolve-FirmwareMode
+  $disk = Get-SystemDisk
+
+  $signalTexts = @()
+  if ($mode.Signals) {
+    $signalTexts += ($mode.Signals | ForEach-Object { $_.Text })
+  }
+  if ($mode.Notes) {
+    $signalTexts += $mode.Notes
+  }
+
+  if (-not $signalTexts) {
+    $signalTexts = @('No firmware signals gathered')
+  }
+
+  $gptStatus = Format-GptStatus -Disk $disk
+  $detail = "Signals: " + ($signalTexts -join '; ') + ". System disk GPT=$gptStatus."
+
+  $pass = $false
+  if ($mode.IsUefi -eq $true) {
+    $pass = $true
+  } elseif ($mode.IsUefi -eq $false) {
+    $pass = $false
+  } else {
+    $pass = $false
+  }
+
+  return New-Result -Name "UEFI Boot Mode (not Legacy/CSM)" -Pass:$pass -Detail:$detail
 }
 
 function Test-TPM {
