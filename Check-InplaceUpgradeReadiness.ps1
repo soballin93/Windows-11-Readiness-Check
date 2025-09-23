@@ -5,9 +5,7 @@
 .DESCRIPTION
   Checks:
     - CPU appears on a supported track (heuristic: Intel Core 8th gen+; AMD Ryzen 2000+; Intel Core Ultra; Snapdragon X; others = unknown)
-
     - RAM >= 7 GB
-
     - System drive is SSD
     - Firmware boot mode is UEFI (not Legacy/CSM)
     - TPM present, enabled, ready; spec version includes 2.0
@@ -49,12 +47,10 @@ function New-Result {
 
 function Test-Ram {
   $mem = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
-
   $minBytes = 7GB
   $ok = ($mem -ge $minBytes)
   $detail = "{0:N1} GB installed (min 7 GB)" -f ($mem/1GB)
   return New-Result -Name "RAM >= 7 GB" -Pass:$ok -Detail:$detail
-
 }
 
 function Get-SystemDisk {
@@ -277,16 +273,16 @@ function Write-Report {
   $sys = (Get-CimInstance Win32_ComputerSystem)
   $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1)
 
-  $summary = [pscustomobject]@{
-    ComputerName = $hostName
-    OS           = "$($os.Caption) $($os.Version) ($([int]$os.OSArchitecture)-bit)"
-    Model        = $sys.Model
-    Manufacturer = $sys.Manufacturer
-    CPU          = $cpu.Name
-    Results      = $Results
-    Overall      = $overall
-    Timestamp    = (Get-Date).ToString('s')
-  }
+    $summary = [pscustomobject]@{
+      ComputerName = $hostName
+      OS           = "$($os.Caption) $($os.Version) ($($os.OSArchitecture))"
+      Model        = $sys.Model
+      Manufacturer = $sys.Manufacturer
+      CPU          = $cpu.Name
+      Results      = $Results
+      Overall      = $overall
+      Timestamp    = (Get-Date).ToString('s')
+    }
 
   # Human readable
   Write-Host ""
