@@ -53,21 +53,88 @@ function Test-Ram {
   return New-Result -Name "RAM >= 7 GB" -Pass:$ok -Detail:$detail
 }
 
+$script:SystemDiskResolutionTrace = $null
+
 function Get-SystemDisk {
-  try {
-    $driveLetter = $env:SystemDrive.TrimEnd('\')[-1]
-    $part = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
-    $disk = Get-Disk -Number $part.DiskNumber -ErrorAction Stop
-    return $disk
-  } catch {
+  $trace = @()
+  $driveRoot = $env:SystemDrive
+
+  if (-not $driveRoot) {
+    $trace += "SystemDrive environment variable not set"
+    $script:SystemDiskResolutionTrace = $trace -join '; '
     return $null
   }
+
+  $driveNormalized = $driveRoot.TrimEnd('\')
+  if (-not $driveNormalized.EndsWith(':')) {
+    $driveNormalized += ':'
+  }
+
+  $driveLetter = $driveNormalized.TrimEnd(':')
+  if ([string]::IsNullOrWhiteSpace($driveLetter)) {
+    $trace += "Could not derive drive letter from '$driveRoot'"
+    $script:SystemDiskResolutionTrace = $trace -join '; '
+    return $null
+  }
+  $driveLetter = $driveLetter.Substring($driveLetter.Length - 1, 1).ToUpper()
+
+  try {
+    $part = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
+    $disk = Get-Disk -Number $part.DiskNumber -ErrorAction Stop
+    $trace += "Storage module resolved drive '$driveNormalized' to Disk #$($disk.Number)"
+    $script:SystemDiskResolutionTrace = $trace -join '; '
+    return $disk
+  } catch {
+    $trace += "Storage module lookup failed: $($_.Exception.Message)"
+  }
+
+  try {
+    $logical = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$driveNormalized'" -ErrorAction Stop
+    $partition = Get-CimAssociatedInstance -InputObject $logical -Association Win32_LogicalDiskToPartition -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $partition) {
+      throw "No associated partition found"
+    }
+
+    $diskDrive = Get-CimAssociatedInstance -InputObject $partition -Association Win32_DiskDriveToDiskPartition -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $diskDrive) {
+      throw "No associated disk drive found"
+    }
+
+    $diskNumber = [int]$diskDrive.Index
+    try {
+      $disk = Get-Disk -Number $diskNumber -ErrorAction Stop
+      $trace += "CIM fallback resolved drive '$driveNormalized' to Disk #$diskNumber"
+      $script:SystemDiskResolutionTrace = $trace -join '; '
+      return $disk
+    } catch {
+      $trace += "CIM fallback resolved disk #$diskNumber but Get-Disk failed: $($_.Exception.Message)"
+      $partitionStyle = if ($partition.Type -like 'GPT*') { 'GPT' } elseif ($partition.Type) { 'MBR/Unknown' } else { 'Unknown' }
+      $fallbackDisk = [pscustomobject]@{
+        Number         = $diskNumber
+        BusType        = if ($diskDrive.InterfaceType) { $diskDrive.InterfaceType } else { 'Unknown' }
+        PartitionStyle = $partitionStyle
+        Model          = $diskDrive.Model
+        Source         = 'CIM Fallback'
+      }
+      $script:SystemDiskResolutionTrace = $trace -join '; '
+      return $fallbackDisk
+    }
+  } catch {
+    $trace += "CIM fallback failed: $($_.Exception.Message)"
+  }
+
+  $script:SystemDiskResolutionTrace = $trace -join '; '
+  return $null
 }
 
 function Test-SSD {
   $disk = Get-SystemDisk
   if (-not $disk) {
-    return New-Result "System Drive is SSD" $false "Unable to resolve system disk."
+    $detail = "Unable to resolve system disk."
+    if ($script:SystemDiskResolutionTrace) {
+      $detail += " Attempts: $script:SystemDiskResolutionTrace"
+    }
+    return New-Result "System Drive is SSD" $false $detail
   }
 
   $isSSD = $false
@@ -100,7 +167,8 @@ function Test-SSD {
     }
   }
 
-  $detail = "Disk #$($disk.Number) | Bus: $($disk.BusType) | GPT: $($disk.PartitionStyle -eq 'GPT') | Evidence: " + ($evidence -join '; ')
+  $source = if ($disk.PSObject.Properties['Source']) { $disk.Source } else { 'Storage' }
+  $detail = "Disk #$($disk.Number) | Bus: $($disk.BusType) | GPT: $($disk.PartitionStyle -eq 'GPT') | Source: $source | Evidence: " + ($evidence -join '; ')
   return New-Result -Name "System Drive is SSD" -Pass:$isSSD -Detail:$detail
 }
 
