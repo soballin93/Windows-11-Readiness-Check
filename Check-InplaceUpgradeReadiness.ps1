@@ -33,7 +33,8 @@
 [CmdletBinding()]
 param(
   [switch]$AssumeCpuSupported,
-  [string]$CpuAllowRegex
+  [string]$CpuAllowRegex,
+  [Alias('v')][switch]$VerboseOutput
 )
 
 function New-Result {
@@ -51,6 +52,37 @@ function Format-State {
   if ($Value -eq $true) { return 'True' }
   if ($Value -eq $false) { return 'False' }
   return 'Unknown'
+}
+
+function Get-CompactSummary {
+  param([object[]]$Results)
+
+  $checks = @(
+    @{ Check = 'CPU Supported (heuristic)'; Label = 'CPU' },
+    @{ Check = 'RAM >= 7 GB'; Label = 'RAM' },
+    @{ Check = 'System Drive is SSD'; Label = 'DRIVE' },
+    @{ Check = 'UEFI Boot Mode (not Legacy/CSM)'; Label = 'UEFI' },
+    @{ Check = 'TPM 2.0 Present/Enabled/Ready'; Label = 'TPM' }
+  )
+
+  $segments = foreach ($entry in $checks) {
+    $result = $Results | Where-Object { $_.Check -eq $entry.Check } | Select-Object -First 1
+    $status = 'UNKNOWN'
+
+    if ($null -ne $result) {
+      if ($entry.Check -eq 'CPU Supported (heuristic)' -and $result.PSObject.Properties['Unknown'] -and $result.Unknown) {
+        $status = 'UNKNOWN'
+      } elseif ($result.Pass -eq $true) {
+        $status = 'PASS'
+      } elseif ($result.Pass -eq $false) {
+        $status = 'FAIL'
+      }
+    }
+
+    '{0} - {1}' -f $entry.Label, $status
+  }
+
+  return $segments -join ' | '
 }
 
 function Test-Ram {
@@ -765,7 +797,10 @@ function Test-CPU {
 }
 
 function Write-Report {
-  param([Parameter(Mandatory)][object[]]$Results)
+  param(
+    [Parameter(Mandatory)][object[]]$Results,
+    [switch]$VerboseOutput
+  )
 
   $allPass = $true
   $cpuUnknown = $false
@@ -803,30 +838,33 @@ function Write-Report {
     Timestamp    = (Get-Date).ToString('s')
   }
 
+  $compactSummary = Get-CompactSummary -Results $Results
+  Write-Output $compactSummary
 
+  if ($VerboseOutput) {
+    # Human readable
+    Write-Host ""
+    Write-Host "=== In-Place Upgrade Readiness ===" -ForegroundColor Cyan
+    Write-Host "Computer : $($summary.ComputerName)"
+    Write-Host "OS       : $($summary.OS)"
+    Write-Host "HW       : $($summary.Manufacturer) $($summary.Model)"
+    Write-Host "CPU      : $($summary.CPU)"
+    Write-Host ""
 
-  # Human readable
-  Write-Host ""
-  Write-Host "=== In-Place Upgrade Readiness ===" -ForegroundColor Cyan
-  Write-Host "Computer : $($summary.ComputerName)"
-  Write-Host "OS       : $($summary.OS)"
-  Write-Host "HW       : $($summary.Manufacturer) $($summary.Model)"
-  Write-Host "CPU      : $($summary.CPU)"
-  Write-Host ""
+    $Results | Select-Object @{n='Check';e={$_.Check}},
+                           @{n='Pass'; e={ if ($_.Pass) {'Yes'} else {'No'} }},
+                           @{n='Detail';e={$_.Detail}} |
+      Format-Table -AutoSize
 
-  $Results | Select-Object @{n='Check';e={$_.Check}},
-                         @{n='Pass'; e={ if ($_.Pass) {'Yes'} else {'No'} }},
-                         @{n='Detail';e={$_.Detail}} |
-    Format-Table -AutoSize
+    Write-Host ""
+    Write-Host "Overall  : $overall"
+    Write-Host ""
 
-  Write-Host ""
-  Write-Host "Overall  : $overall"
-  Write-Host ""
-
-  # JSON block
-  $json = $summary | ConvertTo-Json -Depth 5
-  Write-Host "JSON:" -ForegroundColor DarkGray
-  Write-Output $json
+    # JSON block
+    $json = $summary | ConvertTo-Json -Depth 5
+    Write-Host "JSON:" -ForegroundColor DarkGray
+    Write-Output $json
+  }
 
   # Exit codes:
   # 0 = all pass
@@ -845,4 +883,4 @@ $results += Test-SSD
 $results += Test-UEFI
 $results += Test-TPM
 
-Write-Report -Results $results
+Write-Report -Results $results -VerboseOutput:$VerboseOutput
