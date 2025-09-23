@@ -492,6 +492,145 @@ function Test-TPM {
   return New-Result -Name "TPM 2.0 Present/Enabled/Ready" -Pass:$pass -Detail:$detail
 }
 
+function Resolve-TpmStatus {
+  $signals = @()
+  $notes = @()
+
+  $present = $null
+  $enabled = $null
+  $activated = $null
+  $ready = $null
+  $specCandidates = @()
+
+  try {
+    $tpm = Get-Tpm -ErrorAction Stop
+    if ($tpm) {
+      $signals += "Get-Tpm => Present=$($tpm.TpmPresent); Enabled=$($tpm.TpmEnabled); Activated=$($tpm.TpmActivated); Ready=$($tpm.TpmReady); SpecVersion='$($tpm.SpecVersion)'"
+
+      if ($null -eq $present -and ($tpm.PSObject.Properties['TpmPresent'])) { $present = $tpm.TpmPresent }
+      if ($null -eq $enabled -and ($tpm.PSObject.Properties['TpmEnabled'])) { $enabled = $tpm.TpmEnabled }
+      if ($null -eq $activated -and ($tpm.PSObject.Properties['TpmActivated'])) { $activated = $tpm.TpmActivated }
+      if ($null -eq $ready -and ($tpm.PSObject.Properties['TpmReady'])) { $ready = $tpm.TpmReady }
+      if ($tpm.SpecVersion) { $specCandidates += [string]$tpm.SpecVersion }
+    } else {
+      $notes += 'Get-Tpm returned no data'
+    }
+  } catch {
+    $notes += "Get-Tpm failed: $($_.Exception.Message)"
+  }
+
+  try {
+    $cimTpm = Get-CimInstance -Namespace 'root\\CIMV2\\Security\\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop | Select-Object -First 1
+    if ($cimTpm) {
+      $enabledSignal = $null
+      if ($cimTpm.PSObject.Properties['IsEnabled'] -and $null -ne $cimTpm.IsEnabled) { $enabledSignal = [bool]$cimTpm.IsEnabled }
+      elseif ($cimTpm.PSObject.Properties['IsEnabled_InitialValue'] -and $null -ne $cimTpm.IsEnabled_InitialValue) { $enabledSignal = [bool]$cimTpm.IsEnabled_InitialValue }
+
+      $activatedSignal = $null
+      if ($cimTpm.PSObject.Properties['IsActivated'] -and $null -ne $cimTpm.IsActivated) { $activatedSignal = [bool]$cimTpm.IsActivated }
+      elseif ($cimTpm.PSObject.Properties['IsActivated_InitialValue'] -and $null -ne $cimTpm.IsActivated_InitialValue) { $activatedSignal = [bool]$cimTpm.IsActivated_InitialValue }
+
+      $signals += "Win32_Tpm => Present=True; Enabled=$(Format-State $enabledSignal); Activated=$(Format-State $activatedSignal); SpecVersion='$($cimTpm.SpecVersion)'"
+
+      if ($null -eq $present) { $present = $true }
+
+      if ($null -eq $enabled -and $null -ne $enabledSignal) { $enabled = $enabledSignal }
+
+      if ($null -eq $activated -and $null -ne $activatedSignal) { $activated = $activatedSignal }
+
+      if ($cimTpm.PSObject.Properties['SpecVersion'] -and $cimTpm.SpecVersion) { $specCandidates += [string]$cimTpm.SpecVersion }
+      if ($cimTpm.PSObject.Properties['PhysicalPresenceVersionInfo'] -and $cimTpm.PhysicalPresenceVersionInfo) { $specCandidates += [string]$cimTpm.PhysicalPresenceVersionInfo }
+
+      if ($null -eq $ready) {
+        if ($cimTpm.PSObject.Properties['IsOwned'] -and $null -ne $cimTpm.IsOwned -and $cimTpm.IsOwned -eq $true) {
+          # Owning the TPM typically implies it has been provisioned/ready; treat as a positive proxy when direct signal unavailable.
+          $ready = $true
+        }
+      }
+    } else {
+      $notes += 'Win32_Tpm query returned no instances'
+    }
+  } catch {
+    $notes += "Win32_Tpm lookup failed: $($_.Exception.Message)"
+  }
+
+  try {
+    $reg = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\TrustedPlatformModule' -ErrorAction Stop
+    if ($reg -and $reg.PSObject.Properties['TpmSupport']) {
+      $signals += "Registry TrustedPlatformModule => TpmSupport=$($reg.TpmSupport)"
+      if ($null -eq $present -and $reg.TpmSupport -ne $null) { $present = ($reg.TpmSupport -ne 0) }
+    }
+    if ($reg -and $reg.PSObject.Properties['SpecVersion'] -and $reg.SpecVersion) {
+      $specValue = $reg.SpecVersion
+      if ($specValue -is [byte[]]) {
+        try {
+          $decoded = [System.Text.Encoding]::Unicode.GetString($specValue).Trim([char]0)
+          if ($decoded) { $specCandidates += $decoded }
+        } catch {
+          $notes += "TrustedPlatformModule SpecVersion registry decode failed: $($_.Exception.Message)"
+        }
+      } elseif ($specValue -is [System.Array]) {
+        foreach ($item in $specValue) {
+          if ($item) { $specCandidates += [string]$item }
+        }
+      } else {
+        $specCandidates += [string]$specValue
+      }
+    }
+  } catch {
+    $notes += "TrustedPlatformModule registry lookup failed: $($_.Exception.Message)"
+  }
+
+  $specTokens = @()
+  foreach ($candidate in $specCandidates) {
+    if ($candidate) {
+      $tokens = ([string]$candidate) -split '[,;\s]+' | Where-Object { $_ }
+      foreach ($token in $tokens) {
+        $specTokens += $token.Trim()
+      }
+    }
+  }
+  $specTokens = $specTokens | Sort-Object -Unique
+
+  $spec20 = ($specTokens -contains '2.0')
+
+  return [pscustomobject]@{
+    Present      = $present
+    Enabled      = $enabled
+    Activated    = $activated
+    Ready        = $ready
+    SpecVersions = $specTokens
+    Spec20       = $spec20
+    Signals      = $signals
+    Notes        = $notes
+  }
+}
+
+function Test-TPM {
+  $status = Resolve-TpmStatus
+
+  $pass = ($status.Present -eq $true -and
+           $status.Enabled -eq $true -and
+           $status.Activated -eq $true -and
+           $status.Ready -eq $true -and
+           $status.Spec20)
+
+  $detailParts = @(
+    "Present=$(Format-State $status.Present)",
+    "Enabled=$(Format-State $status.Enabled)",
+    "Activated=$(Format-State $status.Activated)",
+    "Ready=$(Format-State $status.Ready)",
+    "SpecVersions=" + (if ($status.SpecVersions) { $status.SpecVersions -join ', ' } else { 'Unknown' })
+  )
+
+  if ($status.Signals) { $detailParts += "Signals: " + ($status.Signals -join '; ') }
+  if ($status.Notes) { $detailParts += "Notes: " + ($status.Notes -join '; ') }
+
+  $detail = $detailParts -join '. '
+  return New-Result -Name "TPM 2.0 Present/Enabled/Ready" -Pass:$pass -Detail:$detail
+}
+
+
 function Parse-IntelGen {
   param([string]$cpuName)
   # Match common formats: i5-8500, i7-1065G7, i5-1135G7, i9-12900K
