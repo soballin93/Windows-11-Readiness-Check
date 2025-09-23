@@ -139,6 +139,7 @@ function Get-SystemDisk {
       $script:SystemDiskResolutionTrace = $trace -join '; '
       return $fallbackDisk
     }
+
   } catch {
     $trace += "CIM fallback failed: $($_.Exception.Message)"
   }
@@ -756,6 +757,7 @@ function Test-CPU {
     $status = $true
   }
 
+
   $result = New-Result -Name "CPU Supported (heuristic)" -Pass:$status -Detail:$detail
   # Attach a hint about unknown classification
   $result | Add-Member -NotePropertyName Unknown -NotePropertyValue:$unknown
@@ -780,6 +782,7 @@ function Write-Report {
   } else {
     $overall = "FAIL"
   }
+
   if (-not $allPass -and $cpuUnknown -and ($Results | Where-Object { $_.Check -ne 'CPU Supported (heuristic)' -and -not $_.Pass }).Count -eq 0) {
     # Only CPU is unknown but others passed
     $overall = "WARN (CPU unknown)"
@@ -789,7 +792,6 @@ function Write-Report {
   $os = (Get-CimInstance Win32_OperatingSystem)
   $sys = (Get-CimInstance Win32_ComputerSystem)
   $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1)
-
   $summary = [pscustomobject]@{
     ComputerName = $hostName
     OS           = "$($os.Caption) $($os.Version) ($($os.OSArchitecture))"
@@ -800,6 +802,8 @@ function Write-Report {
     Overall      = $overall
     Timestamp    = (Get-Date).ToString('s')
   }
+
+
 
   # Human readable
   Write-Host ""
