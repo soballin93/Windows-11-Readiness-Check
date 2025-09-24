@@ -999,6 +999,115 @@ function New-DeviceAgeResult {
   return $result
 }
 
+function Get-DeviceAgeEstimate {
+  param([string]$cpuName)
+
+  if ([string]::IsNullOrWhiteSpace($cpuName)) { return $null }
+
+  $currentYear = (Get-Date).Year
+  $releaseYear = $null
+
+  if ($cpuName -match 'Intel\(R\)\s+Core\(TM\)\s+Ultra') {
+    $releaseYear = 2023
+  } else {
+    $intelGen = Parse-IntelGen -cpuName $cpuName
+    if ($intelGen) {
+      switch ($intelGen) {
+        14 { $releaseYear = 2023 }
+        13 { $releaseYear = 2022 }
+        12 { $releaseYear = 2021 }
+        11 { $releaseYear = 2020 }
+        10 { $releaseYear = 2019 }
+        9  { $releaseYear = 2018 }
+        8  { $releaseYear = 2017 }
+        7  { $releaseYear = 2016 }
+        6  { $releaseYear = 2015 }
+        5  { $releaseYear = 2014 }
+        4  { $releaseYear = 2013 }
+        3  { $releaseYear = 2012 }
+        2  { $releaseYear = 2011 }
+        default {
+          if ($intelGen -gt 14) {
+            $releaseYear = 2024
+          }
+        }
+      }
+    }
+  }
+
+  if (-not $releaseYear) {
+    $amdSeries = Parse-AmdRyzenSeries -cpuName $cpuName
+    if ($amdSeries) {
+      $seriesString = [string]$amdSeries
+      if ($seriesString.Length -ge 1) {
+        $seriesLeading = [int]$seriesString.Substring(0,1)
+        switch ($seriesLeading) {
+          1 { $releaseYear = 2017 }
+          2 { $releaseYear = 2018 }
+          3 { $releaseYear = 2019 }
+          4 { $releaseYear = 2020 }
+          5 { $releaseYear = 2021 }
+          6 { $releaseYear = 2022 }
+          7 { $releaseYear = 2023 }
+          8 { $releaseYear = 2024 }
+          default { }
+        }
+      }
+    } elseif ($cpuName -match 'Snapdragon\s+X') {
+      $releaseYear = 2024
+    }
+  }
+
+  if (-not $releaseYear) { return $null }
+
+  $ageYears = [Math]::Max(0, $currentYear - $releaseYear)
+  if ($ageYears -gt 15) { $ageYears = 15 }
+
+  $ageText = switch ($ageYears) {
+    { $_ -le 0 } { 'Less than 1 year old' }
+    1            { 'About 1 year old' }
+    2            { 'Roughly 2 years old' }
+    3            { 'Around 3 years old' }
+    4            { 'Around 4 years old' }
+    5            { 'Around 5 years old' }
+    6            { 'Approximately 6 years old' }
+    7            { 'Approximately 7 years old' }
+    8            { 'Approximately 8 years old' }
+    9            { 'Roughly 9 years old' }
+    10           { 'Roughly 10 years old' }
+    default      { "More than $ageYears years old" }
+  }
+
+  $text = "$ageText (CPU generation released around $releaseYear)"
+
+  return [pscustomobject]@{
+    ReleaseYear = $releaseYear
+    AgeYears    = $ageYears
+    Text        = $text
+  }
+}
+
+function New-DeviceAgeResult {
+  param([Parameter(Mandatory)][object]$CpuResult)
+
+  $cpuName = $null
+  if ($CpuResult -and $CpuResult.PSObject.Properties['CpuName']) {
+    $cpuName = $CpuResult.CpuName
+  }
+
+  $estimate = Get-DeviceAgeEstimate -cpuName $cpuName
+
+  if ($estimate) {
+    $result = New-Result -Name 'Device Age Estimate' -Pass:$true -Detail:$estimate.Text
+    $result | Add-Member -NotePropertyName ReleaseYear -NotePropertyValue:$estimate.ReleaseYear
+    $result | Add-Member -NotePropertyName AgeYears -NotePropertyValue:$estimate.AgeYears
+  } else {
+    $result = New-Result -Name 'Device Age Estimate' -Pass:$true -Detail:'Unknown (unable to estimate from CPU model)'
+  }
+
+  return $result
+}
+
 function Test-CPU {
   $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
   $name = $cpu.Name.Trim()
@@ -1152,23 +1261,19 @@ $results += $osCheck
 if ($osCheck.PSObject.Properties['IsWindows11'] -and $osCheck.IsWindows11) {
   $cpuResult = Test-CPU
   $deviceAgeResult = New-DeviceAgeResult -CpuResult $cpuResult
-  $summaryResults = @($cpuResult, $deviceAgeResult)
-  $compactSummary = Get-CompactSummary -Results $summaryResults
 
-  if ($compactSummary) {
-    Write-Output $compactSummary
+  $ageDetail = $deviceAgeResult.Detail
+  if ([string]::IsNullOrWhiteSpace($ageDetail)) {
+    $ageDetail = 'Unknown'
   }
 
-  $message = 'Detected Windows 11. No upgrade readiness checks are required.'
-  $ageMessage = "Device age estimate: $($deviceAgeResult.Detail)"
+  $summaryLine = "Detected Windows 11 | Device age - $ageDetail"
+  Write-Output $summaryLine
 
   if ($VerboseOutput) {
-    Write-Host ""
-    Write-Host $message -ForegroundColor Cyan
-    Write-Host $ageMessage -ForegroundColor Cyan
-  } else {
-    Write-Output $message
-    Write-Output $ageMessage
+    Write-Host ''
+    Write-Host 'Detected Windows 11. No upgrade readiness checks are required.' -ForegroundColor Cyan
+    Write-Host "Device age estimate: $ageDetail" -ForegroundColor Cyan
   }
 
   exit 0
@@ -1181,5 +1286,6 @@ $results += Test-Ram
 $results += Test-SSD
 $results += Test-UEFI
 $results += Test-TPM
+
 
 Write-Report -Results $results -VerboseOutput:$VerboseOutput
