@@ -112,7 +112,20 @@ function Get-CompactSummary {
       }
     }
 
-    '{0} - {1}' -f $entry.Label, $status
+    if ($entry.Label -eq 'CPU') {
+      $cpuModel = $null
+      if ($null -ne $result -and $result.PSObject.Properties['CpuName']) {
+        $cpuModel = $result.CpuName
+      }
+
+      if ([string]::IsNullOrWhiteSpace($cpuModel)) {
+        $cpuModel = 'Unknown CPU'
+      }
+
+      '{0} - {1} - {2}' -f $entry.Label, $cpuModel, $status
+    } else {
+      '{0} - {1}' -f $entry.Label, $status
+    }
   }
 
   return $segments -join ' | '
@@ -826,6 +839,7 @@ function Test-CPU {
   $result = New-Result -Name "CPU Supported (heuristic)" -Pass:$status -Detail:$detail
   # Attach a hint about unknown classification
   $result | Add-Member -NotePropertyName Unknown -NotePropertyValue:$unknown
+  $result | Add-Member -NotePropertyName CpuName -NotePropertyValue:$name
   return $result
 }
 
