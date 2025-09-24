@@ -11,7 +11,7 @@
     - TPM present, enabled, ready; spec version includes 2.0
 
   Outputs: human-readable table + JSON block.
-  Exit code: 0 if all pass; 1 if any requirement fails; 2 if only CPU is “unknown”.
+  Exit code: always 1 (non-zero) for integration scenarios that expect failure handling.
 
 .PARAMETER AssumeCpuSupported
   Treat CPU as supported even if the heuristic can’t prove it.
@@ -54,6 +54,39 @@ function Format-State {
   return 'Unknown'
 }
 
+function Test-OperatingSystem {
+  try {
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+    $caption = $os.Caption
+    $version = $os.Version
+    $build = $os.BuildNumber
+
+    $detailParts = @()
+    if ($caption) { $detailParts += $caption }
+    if ($version) { $detailParts += "Version $version" }
+    if ($build) { $detailParts += "Build $build" }
+
+    if (-not $detailParts) {
+      $detailParts = @('Operating system details unavailable')
+    }
+
+    $detail = $detailParts -join ' | '
+    $isWindows11 = $false
+    if ($caption -match 'Windows\s+11') {
+      $isWindows11 = $true
+    }
+
+    $result = New-Result -Name 'Current OS Version' -Pass:$true -Detail:$detail
+    $result | Add-Member -NotePropertyName IsWindows11 -NotePropertyValue:$isWindows11
+    return $result
+  } catch {
+    $detail = "Failed to query operating system information: $($_.Exception.Message)"
+    $result = New-Result -Name 'Current OS Version' -Pass:$false -Detail:$detail
+    $result | Add-Member -NotePropertyName IsWindows11 -NotePropertyValue:$false
+    return $result
+  }
+}
+
 function Get-CompactSummary {
   param([object[]]$Results)
 
@@ -62,7 +95,8 @@ function Get-CompactSummary {
     @{ Check = 'RAM >= 7 GB'; Label = 'RAM' },
     @{ Check = 'System Drive is SSD'; Label = 'DRIVE' },
     @{ Check = 'UEFI Boot Mode (not Legacy/CSM)'; Label = 'UEFI' },
-    @{ Check = 'TPM 2.0 Present/Enabled/Ready'; Label = 'TPM' }
+    @{ Check = 'TPM 2.0 Present/Enabled/Ready'; Label = 'TPM' },
+    @{ Check = 'Device Age Estimate'; Label = 'Device Age' }
   )
 
   $segments = foreach ($entry in $checks) {
@@ -79,7 +113,27 @@ function Get-CompactSummary {
       }
     }
 
-    '{0} - {1}' -f $entry.Label, $status
+    if ($entry.Label -eq 'CPU') {
+      $cpuModel = $null
+      if ($null -ne $result -and $result.PSObject.Properties['CpuName']) {
+        $cpuModel = $result.CpuName
+      }
+
+      if ([string]::IsNullOrWhiteSpace($cpuModel)) {
+        $cpuModel = 'Unknown CPU'
+      }
+
+      '{0} - {1} - {2}' -f $entry.Label, $cpuModel, $status
+    } elseif ($entry.Label -eq 'Device Age') {
+      $ageDetail = 'Unknown'
+      if ($null -ne $result -and -not [string]::IsNullOrWhiteSpace($result.Detail)) {
+        $ageDetail = $result.Detail
+      }
+
+      '{0} - {1}' -f $entry.Label, $ageDetail
+    } else {
+      '{0} - {1}' -f $entry.Label, $status
+    }
   }
 
   return $segments -join ' | '
@@ -726,6 +780,115 @@ function Parse-AmdRyzenSeries {
   return $null
 }
 
+function Get-DeviceAgeEstimate {
+  param([string]$cpuName)
+
+  if ([string]::IsNullOrWhiteSpace($cpuName)) { return $null }
+
+  $currentYear = (Get-Date).Year
+  $releaseYear = $null
+
+  if ($cpuName -match 'Intel\(R\)\s+Core\(TM\)\s+Ultra') {
+    $releaseYear = 2023
+  } else {
+    $intelGen = Parse-IntelGen -cpuName $cpuName
+    if ($intelGen) {
+      switch ($intelGen) {
+        14 { $releaseYear = 2023 }
+        13 { $releaseYear = 2022 }
+        12 { $releaseYear = 2021 }
+        11 { $releaseYear = 2020 }
+        10 { $releaseYear = 2019 }
+        9  { $releaseYear = 2018 }
+        8  { $releaseYear = 2017 }
+        7  { $releaseYear = 2016 }
+        6  { $releaseYear = 2015 }
+        5  { $releaseYear = 2014 }
+        4  { $releaseYear = 2013 }
+        3  { $releaseYear = 2012 }
+        2  { $releaseYear = 2011 }
+        default {
+          if ($intelGen -gt 14) {
+            $releaseYear = 2024
+          }
+        }
+      }
+    }
+  }
+
+  if (-not $releaseYear) {
+    $amdSeries = Parse-AmdRyzenSeries -cpuName $cpuName
+    if ($amdSeries) {
+      $seriesString = [string]$amdSeries
+      if ($seriesString.Length -ge 1) {
+        $seriesLeading = [int]$seriesString.Substring(0,1)
+        switch ($seriesLeading) {
+          1 { $releaseYear = 2017 }
+          2 { $releaseYear = 2018 }
+          3 { $releaseYear = 2019 }
+          4 { $releaseYear = 2020 }
+          5 { $releaseYear = 2021 }
+          6 { $releaseYear = 2022 }
+          7 { $releaseYear = 2023 }
+          8 { $releaseYear = 2024 }
+          default { }
+        }
+      }
+    } elseif ($cpuName -match 'Snapdragon\s+X') {
+      $releaseYear = 2024
+    }
+  }
+
+  if (-not $releaseYear) { return $null }
+
+  $ageYears = [Math]::Max(0, $currentYear - $releaseYear)
+  if ($ageYears -gt 15) { $ageYears = 15 }
+
+  $ageText = switch ($ageYears) {
+    { $_ -le 0 } { 'Less than 1 year old' }
+    1            { 'About 1 year old' }
+    2            { 'Roughly 2 years old' }
+    3            { 'Around 3 years old' }
+    4            { 'Around 4 years old' }
+    5            { 'Around 5 years old' }
+    6            { 'Approximately 6 years old' }
+    7            { 'Approximately 7 years old' }
+    8            { 'Approximately 8 years old' }
+    9            { 'Roughly 9 years old' }
+    10           { 'Roughly 10 years old' }
+    default      { "More than $ageYears years old" }
+  }
+
+  $text = "$ageText (CPU generation released around $releaseYear)"
+
+  return [pscustomobject]@{
+    ReleaseYear = $releaseYear
+    AgeYears    = $ageYears
+    Text        = $text
+  }
+}
+
+function New-DeviceAgeResult {
+  param([Parameter(Mandatory)][object]$CpuResult)
+
+  $cpuName = $null
+  if ($CpuResult -and $CpuResult.PSObject.Properties['CpuName']) {
+    $cpuName = $CpuResult.CpuName
+  }
+
+  $estimate = Get-DeviceAgeEstimate -cpuName $cpuName
+
+  if ($estimate) {
+    $result = New-Result -Name 'Device Age Estimate' -Pass:$true -Detail:$estimate.Text
+    $result | Add-Member -NotePropertyName ReleaseYear -NotePropertyValue:$estimate.ReleaseYear
+    $result | Add-Member -NotePropertyName AgeYears -NotePropertyValue:$estimate.AgeYears
+  } else {
+    $result = New-Result -Name 'Device Age Estimate' -Pass:$true -Detail:'Unknown (unable to estimate from CPU model)'
+  }
+
+  return $result
+}
+
 function Test-CPU {
   $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
   $name = $cpu.Name.Trim()
@@ -793,6 +956,7 @@ function Test-CPU {
   $result = New-Result -Name "CPU Supported (heuristic)" -Pass:$status -Detail:$detail
   # Attach a hint about unknown classification
   $result | Add-Member -NotePropertyName Unknown -NotePropertyValue:$unknown
+  $result | Add-Member -NotePropertyName CpuName -NotePropertyValue:$name
   return $result
 }
 
@@ -866,18 +1030,43 @@ function Write-Report {
     Write-Output $json
   }
 
-  # Exit codes:
-  # 0 = all pass
-  # 1 = at least one definitive failure (non-CPU or CPU definitely below bar)
-  # 2 = only CPU unknown, everything else passes
-  if ($overall -eq 'PASS') { exit 0 }
-  elseif ($overall -like 'WARN*') { exit 2 }
-  else { exit 1 }
+  # Exit code is always 1 per integration requirements
+  exit 1
 }
 
 # ---- Run checks ----
 $results = @()
-$results += Test-CPU
+$osCheck = Test-OperatingSystem
+$results += $osCheck
+
+if ($osCheck.PSObject.Properties['IsWindows11'] -and $osCheck.IsWindows11) {
+  $cpuResult = Test-CPU
+  $deviceAgeResult = New-DeviceAgeResult -CpuResult $cpuResult
+  $summaryResults = @($cpuResult, $deviceAgeResult)
+  $compactSummary = Get-CompactSummary -Results $summaryResults
+
+  if ($compactSummary) {
+    Write-Output $compactSummary
+  }
+
+  $message = 'Detected Windows 11. No upgrade readiness checks are required.'
+  $ageMessage = "Device age estimate: $($deviceAgeResult.Detail)"
+
+  if ($VerboseOutput) {
+    Write-Host ""
+    Write-Host $message -ForegroundColor Cyan
+    Write-Host $ageMessage -ForegroundColor Cyan
+  } else {
+    Write-Output $message
+    Write-Output $ageMessage
+  }
+
+  exit 0
+}
+
+$cpuResult = Test-CPU
+$results += $cpuResult
+$results += New-DeviceAgeResult -CpuResult $cpuResult
 $results += Test-Ram
 $results += Test-SSD
 $results += Test-UEFI
