@@ -1187,11 +1187,19 @@ function Write-Report {
 
   $allPass = $true
   $cpuUnknown = $false
+  $tpmResult = $null
+  $cpuResult = $null
 
   foreach ($r in $Results) {
     if (-not $r.Pass) { $allPass = $false }
-    if ($r.Check -eq 'CPU Supported (heuristic)' -and $r.PSObject.Properties['Unknown'] -and $r.Unknown) {
-      $cpuUnknown = $true
+    if ($r.Check -eq 'CPU Supported (heuristic)') {
+      if ($r.PSObject.Properties['Unknown'] -and $r.Unknown) {
+        $cpuUnknown = $true
+      }
+      if (-not $cpuResult) { $cpuResult = $r }
+    }
+    if ($r.Check -eq 'TPM 2.0 Present/Enabled/Ready' -and -not $tpmResult) {
+      $tpmResult = $r
     }
   }
 
@@ -1210,19 +1218,71 @@ function Write-Report {
   $os = (Get-CimInstance Win32_OperatingSystem)
   $sys = (Get-CimInstance Win32_ComputerSystem)
   $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1)
+  $baseBoard = (Get-CimInstance Win32_BaseBoard | Select-Object -First 1)
+  $bios = (Get-CimInstance Win32_BIOS | Select-Object -First 1)
+  $motherboardManufacturer = $null
+  $motherboardModel = $null
+  if ($baseBoard) {
+    if ($baseBoard.PSObject.Properties['Manufacturer']) { $motherboardManufacturer = [string]$baseBoard.Manufacturer }
+    if ($baseBoard.PSObject.Properties['Product']) { $motherboardModel = [string]$baseBoard.Product }
+  }
+  if ([string]::IsNullOrWhiteSpace($motherboardManufacturer)) { $motherboardManufacturer = 'Unknown Manufacturer' }
+  if ([string]::IsNullOrWhiteSpace($motherboardModel)) { $motherboardModel = 'Unknown Model' }
+
+  $biosVersion = $null
+  if ($bios) {
+    if ($bios.PSObject.Properties['SMBIOSBIOSVersion'] -and -not [string]::IsNullOrWhiteSpace($bios.SMBIOSBIOSVersion)) {
+      $biosVersion = [string]$bios.SMBIOSBIOSVersion
+    } elseif ($bios.PSObject.Properties['BIOSVersion'] -and $bios.BIOSVersion) {
+      if ($bios.BIOSVersion -is [System.Collections.IEnumerable] -and -not ($bios.BIOSVersion -is [string])) {
+        $biosVersion = ($bios.BIOSVersion | Where-Object { $_ }) -join ', '
+      } else {
+        $biosVersion = [string]$bios.BIOSVersion
+      }
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($biosVersion)) { $biosVersion = 'Unknown Version' }
+
   $summary = [pscustomobject]@{
-    ComputerName = $hostName
-    OS           = "$($os.Caption) $($os.Version) ($($os.OSArchitecture))"
-    Model        = $sys.Model
-    Manufacturer = $sys.Manufacturer
-    CPU          = $cpu.Name
-    Results      = $Results
-    Overall      = $overall
-    Timestamp    = (Get-Date).ToString('s')
+    ComputerName            = $hostName
+    OS                      = "$($os.Caption) $($os.Version) ($($os.OSArchitecture))"
+    Model                   = $sys.Model
+    Manufacturer            = $sys.Manufacturer
+    CPU                     = $cpu.Name
+    MotherboardManufacturer = $motherboardManufacturer
+    MotherboardModel        = $motherboardModel
+    BiosVersion             = $biosVersion
+    Results                 = $Results
+    Overall                 = $overall
+    Timestamp               = (Get-Date).ToString('s')
   }
 
   $compactSummary = Get-CompactSummary -Results $Results
-  Write-Output $compactSummary
+
+  $summaryPrefix = $null
+  $nonTpmFailures = @($Results | Where-Object { $_.Check -ne 'TPM 2.0 Present/Enabled/Ready' -and -not $_.Pass })
+  if ($allPass) {
+    $summaryPrefix = 'Ready to Upgrade'
+  } elseif ($tpmResult -and -not $tpmResult.Pass -and $nonTpmFailures.Count -eq 0 -and $cpuResult -and $cpuResult.PSObject.Properties['CpuName']) {
+    $intelGen = $null
+    try {
+      $intelGen = Parse-IntelGen $cpuResult.CpuName
+    } catch {
+      $intelGen = $null
+    }
+
+    if ($intelGen -ne $null -and $intelGen -ge 8) {
+      $summaryPrefix = 'Upgrade Possible'
+    }
+  }
+
+  $outputSegments = @()
+  if ($summaryPrefix) { $outputSegments += $summaryPrefix }
+  $outputSegments += $compactSummary
+  $outputSegments += "Motherboard - $motherboardManufacturer $motherboardModel"
+  $outputSegments += "BIOS - Version $biosVersion"
+
+  Write-Output ($outputSegments -join ' | ')
 
   if ($VerboseOutput) {
     # Human readable
@@ -1232,6 +1292,8 @@ function Write-Report {
     Write-Host "OS       : $($summary.OS)"
     Write-Host "HW       : $($summary.Manufacturer) $($summary.Model)"
     Write-Host "CPU      : $($summary.CPU)"
+    Write-Host "Mainboard: $motherboardManufacturer $motherboardModel"
+    Write-Host "BIOS     : $biosVersion"
     Write-Host ""
 
     $Results | Select-Object @{n='Check';e={$_.Check}},
