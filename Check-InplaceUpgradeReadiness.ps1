@@ -54,6 +54,39 @@ function Format-State {
   return 'Unknown'
 }
 
+function Test-OperatingSystem {
+  try {
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+    $caption = $os.Caption
+    $version = $os.Version
+    $build = $os.BuildNumber
+
+    $detailParts = @()
+    if ($caption) { $detailParts += $caption }
+    if ($version) { $detailParts += "Version $version" }
+    if ($build) { $detailParts += "Build $build" }
+
+    if (-not $detailParts) {
+      $detailParts = @('Operating system details unavailable')
+    }
+
+    $detail = $detailParts -join ' | '
+    $isWindows11 = $false
+    if ($caption -match 'Windows\s+11') {
+      $isWindows11 = $true
+    }
+
+    $result = New-Result -Name 'Current OS Version' -Pass:$true -Detail:$detail
+    $result | Add-Member -NotePropertyName IsWindows11 -NotePropertyValue:$isWindows11
+    return $result
+  } catch {
+    $detail = "Failed to query operating system information: $($_.Exception.Message)"
+    $result = New-Result -Name 'Current OS Version' -Pass:$false -Detail:$detail
+    $result | Add-Member -NotePropertyName IsWindows11 -NotePropertyValue:$false
+    return $result
+  }
+}
+
 function Get-CompactSummary {
   param([object[]]$Results)
 
@@ -79,7 +112,20 @@ function Get-CompactSummary {
       }
     }
 
-    '{0} - {1}' -f $entry.Label, $status
+    if ($entry.Label -eq 'CPU') {
+      $cpuModel = $null
+      if ($null -ne $result -and $result.PSObject.Properties['CpuName']) {
+        $cpuModel = $result.CpuName
+      }
+
+      if ([string]::IsNullOrWhiteSpace($cpuModel)) {
+        $cpuModel = 'Unknown CPU'
+      }
+
+      '{0} - {1} - {2}' -f $entry.Label, $cpuModel, $status
+    } else {
+      '{0} - {1}' -f $entry.Label, $status
+    }
   }
 
   return $segments -join ' | '
@@ -793,6 +839,7 @@ function Test-CPU {
   $result = New-Result -Name "CPU Supported (heuristic)" -Pass:$status -Detail:$detail
   # Attach a hint about unknown classification
   $result | Add-Member -NotePropertyName Unknown -NotePropertyValue:$unknown
+  $result | Add-Member -NotePropertyName CpuName -NotePropertyValue:$name
   return $result
 }
 
@@ -877,6 +924,20 @@ function Write-Report {
 
 # ---- Run checks ----
 $results = @()
+$osCheck = Test-OperatingSystem
+$results += $osCheck
+
+if ($osCheck.PSObject.Properties['IsWindows11'] -and $osCheck.IsWindows11) {
+  $message = 'Detected Windows 11. No upgrade readiness checks are required.'
+  if ($VerboseOutput) {
+    Write-Host ""
+    Write-Host $message -ForegroundColor Cyan
+  } else {
+    Write-Output $message
+  }
+  exit 0
+}
+
 $results += Test-CPU
 $results += Test-Ram
 $results += Test-SSD
