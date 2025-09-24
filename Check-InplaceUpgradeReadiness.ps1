@@ -1276,7 +1276,7 @@ if ($osCheck.PSObject.Properties['IsWindows11'] -and $osCheck.IsWindows11) {
     Write-Host "Device age estimate: $ageDetail" -ForegroundColor Cyan
   }
 
-  exit 0
+  exit 1
 }
 
 $cpuResult = Test-CPU
