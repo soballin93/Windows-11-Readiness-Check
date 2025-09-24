@@ -131,6 +131,7 @@ function Get-CompactSummary {
       }
 
       '{0} - {1}' -f $entry.Label, $ageDetail
+
     } else {
       '{0} - {1}' -f $entry.Label, $status
     }
@@ -946,13 +947,13 @@ function Test-CPU {
     $evidence += "Overridden by -AssumeCpuSupported"
   }
 
+
   $detail = "CPU='$name'; Vendor='$vendor'; Evidence: " + ($evidence -join '; ')
   $status = $false
   if ($supported) {
     $status = $true
   }
-
-
+  
   $result = New-Result -Name "CPU Supported (heuristic)" -Pass:$status -Detail:$detail
   # Attach a hint about unknown classification
   $result | Add-Member -NotePropertyName Unknown -NotePropertyValue:$unknown
@@ -1053,6 +1054,7 @@ if ($osCheck.PSObject.Properties['IsWindows11'] -and $osCheck.IsWindows11) {
 $cpuResult = Test-CPU
 $results += $cpuResult
 $results += New-DeviceAgeResult -CpuResult $cpuResult
+
 $results += Test-Ram
 $results += Test-SSD
 $results += Test-UEFI
